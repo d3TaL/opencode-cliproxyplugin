@@ -1,206 +1,179 @@
-# OpenCode CLIProxyAPI
+# Установка CLIProxyAPI в OpenCode v1 на Windows
 
-[![CI](https://github.com/yourcasualdev/opencode-cliproxyapi/actions/workflows/ci.yml/badge.svg)](https://github.com/yourcasualdev/opencode-cliproxyapi/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/opencode-cliproxyapi)](https://www.npmjs.com/package/opencode-cliproxyapi)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+`install.ps1` устанавливает локальный плагин из папки `opencode-cliproxyapi`.
+Нужны Windows PowerShell 5.1 (или PowerShell 7), установленный **OpenCode 1.x**
+и доступный сервер CLIProxyAPI. Права администратора, Node.js, npm и отдельный Bun
+для установки плагина не нужны: OpenCode сам исполняет TypeScript.
 
-Use every model exposed by [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
-directly in [OpenCode](https://opencode.ai/).
+## Установка по ссылке из GitHub
 
-The plugin discovers CLIProxyAPI's live `/v1/models` catalog whenever OpenCode
-starts. Available models appear in the normal `/models` picker under
-**CLIProxyAPI**. OpenCode Go models that expose Anthropic-compatible endpoints
-are automatically routed through `/v1/messages` using live model metadata from
-[models.dev](https://models.dev/); the remaining discovered models continue to
-use the provider's configured default protocol. No model IDs are hard-coded.
-
-## Quick start
-
-You need OpenCode, a running CLIProxyAPI server, and one of its API keys.
-
-### 1. Install
-
-```bash
-opencode plugin opencode-cliproxyapi --global
-```
-
-### 2. Save your connection
-
-Open your global OpenCode config:
+Загрузите в свой публичный репозиторий оба скрипта и исходники, сохранив структуру:
 
 ```text
-~/.config/opencode/opencode.json
+install-online.ps1
+install.ps1
+opencode-cliproxyapi/
+  package.json
+  LICENSE
+  src/index.ts
+  src/catalog.ts
 ```
 
-The installer may have created `opencode.jsonc` instead. Either filename works.
-Configure the plugin entry with your persistent server URL and API key:
+На другом компьютере достаточно выполнить в PowerShell следующие команды,
+заменив `OWNER/REPO` на имя своего репозитория:
 
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    [
-      "opencode-cliproxyapi",
-      {
-        "baseURL": "http://your-server:8317",
-        "apiKey": "your-cli-proxy-api-key"
-      }
-    ]
-  ]
-}
+```powershell
+$repo = 'OWNER/REPO'
+$ref = 'main'
+$installer = Join-Path $env:TEMP 'opencode-cliproxyapi-install-online.ps1'
+Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/$repo/$ref/install-online.ps1" -OutFile $installer
+powershell -NoProfile -ExecutionPolicy Bypass -File $installer -Repository $repo -Ref $ref
 ```
 
-The URL may include `/v1`, but it is not required. If `baseURL` is omitted, the
-plugin uses `http://localhost:8317/v1`.
+`install-online.ps1` скачает необходимые файлы из этого репозитория во временную
+папку, запустит `install.ps1` и удалит временные исходники. Git на компьютере
+не требуется. Обычный запуск запросит адрес API, ссылку на каталог моделей и ключ.
+Для установки из тега или конкретного коммита укажите его вместо `main` в `$ref`.
+Удалённому установщику доступны те же параметры подключения, например
+`-BaseUrl`, `-ModelsUrl`, `-ApiKey` и `-NonInteractive`.
 
-Keep this global config private because it contains your API key. Do not copy
-the connection into a project's `opencode.json` or commit it to a repository.
+Адреса вашего API и ключ вводятся при установке: их не нужно публиковать в GitHub.
+Готовая рабочая ссылка появится после публикации файлов в вашем репозитории;
+`OWNER/REPO` в примере — шаблон.
 
-### 3. Verify
+## Установка из локальной папки
 
-```bash
+Откройте PowerShell в корне этого проекта:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+Скрипт запросит адрес API, ссылку на каталог моделей и, если ключ ещё не настроен,
+сам ключ со скрытым вводом. По умолчанию API — `http://localhost:8317/v1`,
+каталог — `http://localhost:8317/v1/models?client_version=pi`. Нажмите Enter,
+чтобы оставить предложенный адрес или пропустить настройку ключа.
+Введённый ключ сохраняется в пользовательскую переменную Windows `CPA_API_KEY`;
+он не записывается в исходники и параметры плагина. Переменные среды пользователя
+хранятся Windows в открытом виде.
+
+Для своего сервера:
+
+```powershell
+.\install.ps1 -BaseUrl 'http://192.168.1.10:8317' -ModelsUrl 'http://192.168.1.10:8317/v1/models?client_version=pi'
+```
+
+Для автоматического запуска без вопросов, когда `CPA_API_KEY` уже задан:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -BaseUrl 'http://localhost:8317' -NonInteractive
+```
+
+При отсутствии ключа этот режим устанавливает плагин с предупреждением;
+ключ можно настроить позже. Если сервер допускает запросы без авторизации,
+ключ не нужен. Можно передать ключ как `SecureString` из PowerShell:
+
+```powershell
+.\install.ps1 -ApiKey (Read-Host 'API key' -AsSecureString)
+```
+
+После установки полностью перезапустите терминал и OpenCode. В каталоге своего
+рабочего проекта выполните:
+
+```powershell
 opencode models cliproxyapi
-```
-
-You should see models reported by your server:
-
-```text
-cliproxyapi/claude-sonnet-4-6
-cliproxyapi/gpt-5.6-terra
-cliproxyapi/gemini-3.1-pro-low
-```
-
-### 4. Select a model
-
-Start OpenCode and run `/models`:
-
-```bash
 opencode
 ```
 
-Choose **CLIProxyAPI**, select a model, and use OpenCode normally. Restart
-OpenCode whenever the model catalog on CLIProxyAPI changes.
+В OpenCode откройте `/models` и выберите модель провайдера **CLIProxyAPI**.
+Установка не запускает сервер CLIProxyAPI. Проверку моделей выполняйте вне папки
+`opencode-cliproxyapi`: её собственный `opencode.json` ссылается на `dist/index.js`
+и предназначен для разработки со сборкой.
 
-> This release stores the connection in OpenCode's global config instead of
-> using the `/connect` screen. Model selection itself uses the standard
-> `/models` experience.
+По умолчанию файлы устанавливаются в `%USERPROFILE%\.config\opencode`:
 
-## Configuration
-
-The recommended configuration is the global plugin entry shown above:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    [
-      "opencode-cliproxyapi",
-      {
-        "baseURL": "http://your-server:8317",
-        "apiKey": "your-cli-proxy-api-key",
-        "providerName": "My CLIProxyAPI"
-      }
-    ]
-  ]
-}
+```text
+opencode/
+  plugins/opencode-cliproxyapi.ts   # загрузчик с единственным экспортом
+  cliproxyapi/
+    src/index.ts
+    src/catalog.ts
+    options.json                  # URL и прочие параметры подключения
+    installation.json
+    LICENSE
 ```
 
-| Plugin option | Default | Purpose |
-| --- | --- | --- |
-| `baseURL` | `CLIPROXY_BASE_URL` or `http://localhost:8317/v1` | CLIProxyAPI URL |
-| `apiKey` | `CLIPROXY_API_KEY` | CLIProxyAPI key |
-| `providerID` | `cliproxyapi` | ID used in `provider/model` names |
-| `providerName` | `CLIProxyAPI` | Name displayed in the model picker |
-| `protocol` | `chat` | Default protocol: `chat` uses `/chat/completions`; `responses` uses `/responses`. Models marked as Anthropic-compatible by dynamic metadata override this per model. |
-| `modelMetadataURL` | `https://models.dev/api.json` | Dynamic model-level protocol metadata. Set to `false` to disable enrichment and use only the default protocol. |
-| `discoveryTimeoutMs` | `10000` | Startup model-discovery timeout |
+При заданном `OPENCODE_CONFIG_DIR` используется этот каталог. Иначе учитывается
+`XDG_CONFIG_HOME`: `<XDG_CONFIG_HOME>\opencode`. Параметр `-ConfigDir` позволяет
+указать каталог явно; для нестандартного каталога задайте `OPENCODE_CONFIG_DIR`
+также при запуске OpenCode.
 
-If model metadata cannot be reached, the plugin logs a warning and keeps the
-CLIProxyAPI-discovered models available with the configured default protocol.
+Повторный запуск обновляет копию исходников, сохраняет параметры подключения
+и создаёт резервную копию предыдущей установки в `.cliproxyapi-backups` внутри
+каталога конфигурации. Исходная папка после установки не требуется.
+Файлы `opencode.json` и `opencode.jsonc` остаются без изменений. Если в них уже
+подключён `opencode-cliproxyapi` из npm, удалите прежнюю запись `plugin` вручную,
+чтобы плагин не загружался дважды. Скрипт предупреждает при обнаружении такой записи.
 
-### Optional environment variables
+Дополнительные параметры:
 
-Environment variables remain available for containers, CI, or users who prefer
-not to place a key in the config:
+| Параметр | Назначение |
+| --- | --- |
+| `-SourcePath` | Каталог исходного пакета, содержащий `package.json` и `src` |
+| `-ConfigDir` | Каталог конфигурации OpenCode |
+| `-BaseUrl` | URL CLIProxyAPI; суффикс `/v1` необязателен |
+| `-ModelsUrl` | Полный URL каталога, например `http://localhost:8317/v1/models?client_version=pi` |
+| `-Protocol chat` / `-Protocol responses` | Протокол по умолчанию |
+| `-ProviderName` | Название провайдера в списке моделей |
+| `-ApiKey` | Ключ как `SecureString`, сохраняемый в среде пользователя |
+| `-OpenCodePath` | Путь к `opencode.exe`, если он отсутствует в `PATH` |
+| `-NonInteractive` | Не запрашивать адреса и ключ |
+| `-WhatIf` | Проверить входные данные и показать действие без установки |
 
-```bash
-export CLIPROXY_BASE_URL="http://your-server:8317"
-export CLIPROXY_API_KEY="your-cli-proxy-api-key"
+При повторном запуске предложены сохранённые адреса. В режиме `-NonInteractive`
+параметры сохраняются, если не переданы новые. Если меняется адрес API,
+стандартная ссылка на каталог обновляется вместе с ним; пользовательская ссылка сохраняется.
+При первой установке `-BaseUrl` по умолчанию учитывает `CLIPROXY_BASE_URL`.
+Другие опции плагина можно указать в `cliproxyapi/options.json`, например
+`"modelMetadataURL": false` для отключения загрузки метаданных с models.dev.
+
+## Ошибка `Provider not found: cliproxyapi`
+
+Включите логи, чтобы увидеть причину:
+
+```powershell
+opencode --print-logs --log-level DEBUG models cliproxyapi
 ```
 
-Put these lines in your shell profile if you want them to persist. Explicit
-plugin options in `opencode.json` take precedence over environment variables.
+Если плагин загрузился, но API отвечает `401 Missing API key`, текущий терминал
+может ещё не видеть сохранённую пользовательскую переменную. В этом случае
+загрузите ключ в текущую сессию PowerShell и повторите проверку:
 
-Existing `provider.cliproxyapi` settings are preserved, so individual models
-can be customized:
-
-```json
-{
-  "provider": {
-    "cliproxyapi": {
-      "models": {
-        "gpt-5.6-terra": {
-          "name": "Terra",
-          "limit": {
-            "context": 200000,
-            "output": 65536
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-## Troubleshooting
-
-### `Missing API key`
-
-Check that the global plugin entry contains a non-empty `apiKey`, then restart
-OpenCode. If you chose environment variables instead, ensure
-`CLIPROXY_API_KEY` is available to the process that starts OpenCode.
-
-### No CLIProxyAPI models appear
-
-First check the API directly:
-
-```bash
-curl -H "Authorization: Bearer your-cli-proxy-api-key" \
-  "http://your-server:8317/v1/models"
-```
-
-Then restart OpenCode and run:
-
-```bash
+```powershell
+$env:CPA_API_KEY = [Environment]::GetEnvironmentVariable('CPA_API_KEY', 'User')
 opencode models cliproxyapi
 ```
 
-### Environment configuration works in one terminal but not another
+Эта команда подходит, если ключ уже сохранён установщиком. Новая вкладка
+в давно открытом Windows Terminal может наследовать прежнее окружение;
+для обновления среды полностью закройте приложение терминала и откройте снова.
 
-Move the connection to the recommended global OpenCode config, or add the
-environment variables to your shell profile.
+## Проверки
 
-## Development
+Проверки установщика без изменения пользовательской конфигурации:
 
-```bash
-git clone https://github.com/yourcasualdev/opencode-cliproxyapi.git
-cd opencode-cliproxyapi
-bun install
-bun run check
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\install.Tests.ps1
 ```
 
-The repository's `opencode.json` loads the local build for integration testing:
+При наличии Node.js можно также проверить реальную загрузку в OpenCode
+и запросы с тестовым ключом к локальному тестовому API:
 
-```bash
-bun run build
-export CLIPROXY_BASE_URL="http://your-server:8317"
-export CLIPROXY_API_KEY="your-cli-proxy-api-key"
-opencode models cliproxyapi
+```powershell
+node .\tests\smoke.mjs
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and
-[SECURITY.md](SECURITY.md) for private vulnerability reporting.
+Обе проверки используют временные каталоги и не изменяют пользовательские настройки.
 
-## License
-
-[MIT](LICENSE)
+Механизм локальной загрузки описан в [документации OpenCode](https://opencode.ai/docs/plugins/).
+Подробнее о плагине — в [его README](opencode-cliproxyapi/README.md).

@@ -4,6 +4,7 @@ import {
   discoverModels,
   normalizeBaseURL,
   type CatalogModel,
+  type ModelInputModality,
   type ModelProtocolCatalog,
 } from "./catalog.js"
 
@@ -15,6 +16,7 @@ const DEFAULT_MODEL_METADATA_URL = "https://models.dev/api.json"
 
 type ConnectorOptions = {
   baseURL?: string
+  modelsURL?: string
   apiKey?: string
   providerID?: string
   providerName?: string
@@ -24,14 +26,29 @@ type ConnectorOptions = {
 }
 
 type ProviderConfig = NonNullable<Config["provider"]>[string]
-type ModelConfig = NonNullable<ProviderConfig["models"]>[string]
+type LegacyModelConfig = NonNullable<ProviderConfig["models"]>[string]
+type ModelVariantConfig = { disabled?: boolean } & Record<string, unknown>
+type ModelConfig = LegacyModelConfig & {
+  interleaved?: boolean | string | { field: string }
+  variants?: Record<string, ModelVariantConfig>
+}
+
+const KNOWN_REASONING_VARIANTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 export const CLIProxyAPIPlugin: Plugin = async ({ client }, rawOptions) => {
   const options = readOptions(rawOptions)
+  const providerID = options.providerID ?? DEFAULT_PROVIDER_ID
+
+  await client.app.log({
+    body: {
+      service: "opencode-cliproxyapi",
+      level: "info",
+      message: `Loaded plugin entrypoint ${import.meta.url}`,
+    },
+  })
 
   return {
     config: async (config) => {
-      const providerID = options.providerID ?? DEFAULT_PROVIDER_ID
       const existing = config.provider?.[providerID]
       const baseURL = normalizeBaseURL(
         options.baseURL ??
@@ -40,13 +57,17 @@ export const CLIProxyAPIPlugin: Plugin = async ({ client }, rawOptions) => {
           DEFAULT_BASE_URL,
       )
       const apiKey =
-        options.apiKey ?? process.env.CLIPROXY_API_KEY ?? stringOption(existing?.options?.apiKey)
+        options.apiKey ??
+        process.env.CPA_API_KEY ??
+        process.env.CLIPROXY_API_KEY ??
+        stringOption(existing?.options?.apiKey)
 
       try {
         const timeoutMs = options.discoveryTimeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS
         const [catalog, protocolDiscovery] = await Promise.all([
           discoverModels({
             baseURL,
+            modelsURL: options.modelsURL,
             apiKey,
             timeoutMs,
           }),
@@ -94,6 +115,20 @@ export const CLIProxyAPIPlugin: Plugin = async ({ client }, rawOptions) => {
         throw error
       }
     },
+    "chat.params": async (input, output) => {
+      if (input.model.providerID !== providerID) return
+
+      const effort = stringOption(output.options.reasoningEffort) ?? stringOption(output.options.effort)
+      if (!effort) return
+
+      await client.app.log({
+        body: {
+          service: "opencode-cliproxyapi",
+          level: "debug",
+          message: `Applying reasoning effort ${effort} to ${input.model.id}`,
+        },
+      })
+    },
   }
 }
 
@@ -102,13 +137,14 @@ export default {
   server: CLIProxyAPIPlugin,
 } satisfies PluginModule
 export {
+  defaultModelsURL,
   discoverModelProtocols,
   discoverModels,
   normalizeBaseURL,
   parseCatalog,
   parseModelProtocolCatalog,
 } from "./catalog.js"
-export type { CatalogModel, ModelProtocolCatalog } from "./catalog.js"
+export type { CatalogModel, ModelInputModality, ModelProtocolCatalog } from "./catalog.js"
 
 function addProvider(
   config: Config,
@@ -124,32 +160,50 @@ function addProvider(
 ) {
   const existing = config.provider?.[input.providerID]
   const discovered: Record<string, ModelConfig> = Object.fromEntries(
-    input.catalog.map((model) => [
-      model.id,
-      {
-        name: displayName(model.id),
-        tool_call: !isImageModel(model.id),
-        reasoning: isReasoningModel(model.id),
-        attachment: supportsAttachments(model.id),
-        ...(model.ownedBy &&
-        resolveModelNpm(input.protocolCatalog, model.ownedBy, model.id) ===
-          "@ai-sdk/anthropic"
-          ? {
-              provider: {
-                npm: "@ai-sdk/anthropic",
-              },
-            }
-          : {}),
-        ...(isImageModel(model.id)
-          ? {
-              modalities: {
-                input: ["text", "image"],
-                output: ["image"],
-              },
-            }
-          : {}),
-      },
-    ]),
+    input.catalog.map((model) => {
+      const npm = resolveModelNpm(input.protocolCatalog, model.ownedBy, model.id)
+      const inputModalities = model.inputModalities ?? inferredInputModalities(model.id)
+      const reasoning = model.reasoningLevels
+        ? model.reasoningLevels.length > 0
+        : isReasoningModel(model.id)
+      const variants =
+        model.reasoningLevels && model.reasoningLevels.length > 0
+          ? reasoningVariants(model.reasoningLevels, npm)
+          : undefined
+
+      return [
+        model.id,
+        {
+          name: model.name,
+          tool_call: !isImageModel(model.id),
+          reasoning,
+          attachment: inputModalities.some((modality) => modality !== "text"),
+          modalities: {
+            input: inputModalities,
+            output: isImageModel(model.id) ? ["image"] : ["text"],
+          },
+          ...(model.contextLimit && model.outputLimit
+            ? {
+                limit: {
+                  context: model.contextLimit,
+                  output: model.outputLimit,
+                },
+              }
+            : {}),
+          ...(npm === "@ai-sdk/anthropic"
+            ? {
+                provider: {
+                  npm,
+                },
+              }
+            : {}),
+          ...(npm === "@ai-sdk/openai-compatible" && reasoning
+            ? { interleaved: { field: "reasoning_content" } }
+            : {}),
+          ...(variants ? { variants } : {}),
+        },
+      ]
+    }),
   )
 
   config.provider = {
@@ -160,7 +214,7 @@ function addProvider(
       npm:
         existing?.npm ??
         (input.protocol === "responses" ? "@ai-sdk/openai" : "@ai-sdk/openai-compatible"),
-      env: [...new Set([...(existing?.env ?? []), "CLIPROXY_API_KEY"])],
+      env: [...new Set([...(existing?.env ?? []), "CPA_API_KEY", "CLIPROXY_API_KEY"])],
       options: {
         ...existing?.options,
         baseURL: input.baseURL,
@@ -173,11 +227,15 @@ function addProvider(
 
 function resolveModelNpm(
   catalog: ModelProtocolCatalog,
-  providerID: string,
+  providerID: string | undefined,
   modelID: string,
-): string | undefined {
-  const provider = catalog[providerID]
-  return provider?.models[modelID] ?? provider?.npm
+): "@ai-sdk/anthropic" | "@ai-sdk/openai-compatible" {
+  const provider = providerID ? catalog[providerID] : undefined
+  const discovered = provider?.models[modelID] ?? provider?.npm
+  if (discovered === "@ai-sdk/anthropic" || /^claude(?:-|$)/i.test(modelID)) {
+    return "@ai-sdk/anthropic"
+  }
+  return "@ai-sdk/openai-compatible"
 }
 
 function mergeModels(
@@ -186,7 +244,7 @@ function mergeModels(
 ): Record<string, ModelConfig> {
   const merged = { ...discovered }
 
-  for (const [modelID, model] of Object.entries(existing ?? {})) {
+  for (const [modelID, model] of Object.entries((existing ?? {}) as Record<string, ModelConfig>)) {
     const discoveredModel = merged[modelID]
     const providerNpm = model.provider?.npm ?? discoveredModel?.provider?.npm
     merged[modelID] = {
@@ -204,6 +262,7 @@ function readOptions(input?: PluginOptions): ConnectorOptions {
 
   return {
     baseURL: stringOption(input.baseURL),
+    modelsURL: stringOption(input.modelsURL),
     apiKey: stringOption(input.apiKey),
     providerID: stringOption(input.providerID),
     providerName: stringOption(input.providerName),
@@ -238,19 +297,6 @@ function stringOption(value: unknown) {
   return typeof value === "string" && value.trim() !== "" ? value : undefined
 }
 
-function displayName(modelID: string) {
-  return modelID
-    .split("-")
-    .map((part) => {
-      const lower = part.toLowerCase()
-      if (lower === "gpt") return "GPT"
-      if (lower === "oss") return "OSS"
-      if (lower === "codex") return "Codex"
-      return part.charAt(0).toUpperCase() + part.slice(1)
-    })
-    .join(" ")
-}
-
 function isImageModel(modelID: string) {
   return /(?:^|-)image(?:-|$)/i.test(modelID)
 }
@@ -259,6 +305,26 @@ function isReasoningModel(modelID: string) {
   return /thinking|reasoning|codex|gpt-(?:5|oss)/i.test(modelID)
 }
 
-function supportsAttachments(modelID: string) {
-  return /^(?:claude|gemini|gpt)/i.test(modelID)
+function inferredInputModalities(modelID: string): ModelInputModality[] {
+  return /^(?:claude|gemini|gpt)/i.test(modelID) || isImageModel(modelID)
+    ? ["text", "image"]
+    : ["text"]
+}
+
+function reasoningVariants(
+  levels: string[],
+  npm: "@ai-sdk/anthropic" | "@ai-sdk/openai-compatible",
+): Record<string, ModelVariantConfig> {
+  const supported = new Set(levels)
+  const allLevels = [...new Set([...KNOWN_REASONING_VARIANTS, ...levels])]
+
+  return Object.fromEntries(
+    allLevels.map((effort) => {
+      if (!supported.has(effort)) return [effort, { disabled: true }]
+      if (npm === "@ai-sdk/anthropic") {
+        return [effort, { thinking: { type: "adaptive" }, effort }]
+      }
+      return [effort, { reasoningEffort: effort }]
+    }),
+  )
 }
